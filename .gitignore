@@ -17,3 +17,6 @@ egs/*/*/downloads
 .pytest_cache/
 .eggs/
 *.egg-info/
+audio
+runs
+checkpoint
