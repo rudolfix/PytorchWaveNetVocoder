@@ -120,12 +120,6 @@ def train_generator(wav_list, sample_rate, receptive_field,
             # ---------------------------------------
             if batch_length is not None:
                 # make buffer array
-                if "x_buffer" not in locals():
-                    x_buffer = np.empty((0), dtype=np.float32)
-                    h_buffer = np.empty((0, h.shape[1]), dtype=np.float32)
-                x_buffer = np.concatenate([x_buffer, x], axis=0)
-                h_buffer = np.concatenate([h_buffer, h], axis=0)
-
                 epoch_range = np.arange((len(x) - receptive_field - batch_length) // batch_length)
                 if shuffle:
                     np.random.shuffle(epoch_range)
@@ -133,8 +127,8 @@ def train_generator(wav_list, sample_rate, receptive_field,
                 for idx in epoch_range:
                     # get pieces
                     start_sample = idx * batch_length
-                    x_ = x_buffer[start_sample:start_sample + receptive_field + batch_length]
-                    h_ = h_buffer[start_sample:start_sample + receptive_field + batch_length]
+                    x_ = x[start_sample:start_sample + receptive_field + batch_length]
+                    h_ = h[start_sample:start_sample + receptive_field + batch_length]
 
                     # perform pre-processing
                     if wav_transform is not None:
@@ -413,7 +407,7 @@ def main():
                              seconds=int((args.iters - (i + 1)) * (total / args.intervals)))))
             # write summary
             writer.add_scalar("Loss", loss / args.intervals, i)
-            writer.add_scalar("Batch Time", total / args.intervals / args.intervals, i)
+            writer.add_scalar("Batch Time", total / args.intervals, i)
 
             source_sample = decode_mu_law(batch_x.cpu().numpy().flatten('C'), args.n_quantize)
             writer.add_audio("Input Sample", source_sample, i, args.fs)
