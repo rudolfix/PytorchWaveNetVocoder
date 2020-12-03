@@ -201,8 +201,8 @@ def main():
     )
 
     logging.info("decoding (length = %d)" % h.shape[2])
-    # samples = model.fast_generate(x, h, new_samples, args.intervals)
-    samples = model.generate(x, h, new_samples, args.intervals)
+    samples = model.fast_generate(x, h, new_samples, args.intervals)
+    # samples = model.generate(x, h, new_samples, args.intervals)
     wav_data = decode_mu_law(samples, config.n_quantize)
     logging.info(f"decoded {len(seed_sample)}")
     # wav_data.append(seed_sample)

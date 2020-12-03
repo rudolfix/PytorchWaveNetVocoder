@@ -352,12 +352,14 @@ class WaveNet(nn.Module):
         # generate
         samples = x[0]
         start = time.time()
+        forward_time = 0
         for i in range(n_samples):
             output = samples[-self.kernel_size * 2 + 1:].unsqueeze(0)
             output = self._preprocess(output)
             h_ = h[:, :, samples.size(0) - 1].contiguous().view(1, self.n_aux, 1)
             output_buffer_next = []
             skip_connections = []
+            start_forward = time.time()
             for l, d in enumerate(self.dilations):
                 output, skip = self._generate_residual_forward(
                     output, h_, self.dil_sigmoid[l], self.dil_tanh[l],
@@ -366,7 +368,7 @@ class WaveNet(nn.Module):
                 output = torch.cat([output_buffer[l], output], dim=2)
                 output_buffer_next.append(output[:, :, -buffer_size[l]:])
                 skip_connections.append(skip)
-
+            forward_time += time.time() - start_forward
             # update buffer
             output_buffer = output_buffer_next
 
@@ -386,11 +388,13 @@ class WaveNet(nn.Module):
 
             # show progress
             if intervals is not None and (i + 1) % intervals == 0:
-                logging.info("%d/%d estimated time = %.3f sec (%.3f sec / sample)" % (
+                elapsed = time.time() - start
+                logging.info("%d/%d estimated time = %.3f sec (%.3f sec / sample) %.3f%% in forward" % (
                     i + 1, n_samples,
-                    (n_samples - i - 1) * ((time.time() - start) / intervals),
-                    (time.time() - start) / intervals))
+                    (n_samples - i - 1) * (elapsed / intervals),
+                    elapsed / intervals, (forward_time / elapsed)*100))
                 start = time.time()
+                forward_time = 0
 
         return samples[-n_samples:].cpu().numpy()
 
