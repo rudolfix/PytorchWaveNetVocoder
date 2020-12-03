@@ -265,11 +265,11 @@ class WaveNet(nn.Module):
             h = F.pad(h, (n_pad, 0), "replicate")
 
         # generate
-        samples = x[0].tolist()
+        samples = x[0]
         start = time.time()
         for i in range(n_samples):
             current_idx = len(samples)
-            x = torch.tensor(samples[-self.receptive_field:]).long().view(1, -1)
+            x = samples[-self.receptive_field:].unsqueeze(0)
             h_ = h[:, :, current_idx - self.receptive_field: current_idx]
 
             # calculate output
@@ -288,13 +288,13 @@ class WaveNet(nn.Module):
             if mode == "sampling":
                 posterior = F.softmax(output[-1], dim=0)
                 dist = torch.distributions.Categorical(posterior)
-                sample = dist.sample()
+                sample = dist.sample().unsqueeze(0)
             elif mode == "argmax":
                 sample = output[-1].argmax()
             else:
                 logging.error("mode should be sampling or argmax")
                 sys.exit(1)
-            samples.append(sample)
+            samples = torch.cat([samples, sample], dim=0)
 
             # show progress
             if intervals is not None and (i + 1) % intervals == 0:
@@ -304,7 +304,7 @@ class WaveNet(nn.Module):
                     (time.time() - start) / intervals))
                 start = time.time()
 
-        return np.array(samples[-n_samples:])
+        return samples[-n_samples:].cpu().numpy()
 
     def fast_generate(self, x, h, n_samples, intervals=None, mode="sampling"):
         """GENERATE WAVEFORM WITH FAST ALGORITHM.
