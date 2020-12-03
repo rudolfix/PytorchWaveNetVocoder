@@ -181,7 +181,7 @@ def main():
     wav_id = np.random.randint(0, high=len(wav_list))
     seed_x, _ = sf.read(wav_list[wav_id], dtype=np.float32)
     tot_sample_length = config.batch_length + model.receptive_field
-    max_sample_id = seed_x.shape[0] + tot_sample_length
+    max_sample_id = seed_x.shape[0] - tot_sample_length
     assert max_sample_id >= 0
     sample_id = np.random.randint(0, max_sample_id)
     seed_sample = seed_x[sample_id:sample_id + tot_sample_length]
