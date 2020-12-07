@@ -306,7 +306,7 @@ class WaveNet(nn.Module):
 
         return samples[-n_samples:].cpu().numpy()
 
-    def fast_generate(self, x, h, n_samples, intervals=None, mode="sampling"):
+    def fast_generate(self, x, h, n_samples, intervals=None, mode="sampling", callback=None):
         """GENERATE WAVEFORM WITH FAST ALGORITHM.
 
         Args:
@@ -393,6 +393,9 @@ class WaveNet(nn.Module):
                     i + 1, n_samples,
                     (n_samples - i - 1) * (elapsed / intervals),
                     elapsed / intervals, (forward_time / elapsed)*100))
+                # call callback if provided
+                if callback is not None:
+                    callback(samples[-n_samples:].cpu().numpy(), intervals, elapsed)
                 start = time.time()
                 forward_time = 0
 

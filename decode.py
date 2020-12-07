@@ -200,14 +200,18 @@ def main():
         speaker_code=args.speaker_code
     )
 
-    logging.info("decoding (length = %d)" % h.shape[2])
-    samples = model.fast_generate(x, h, new_samples, args.intervals)
-    # samples = model.generate(x, h, new_samples, args.intervals)
-    wav_data = decode_mu_law(samples, config.n_quantize)
-    logging.info(f"decoded {len(seed_sample)}")
-    # wav_data.append(seed_sample)
+    def save_samples(samples, file_name):
+        wav_data = decode_mu_law(samples, config.n_quantize)
+        sf.write(file_name, wav_data, args.fs, "PCM_16")
 
-    sf.write(args.outdir + "/" +  "decoded.wav", wav_data, args.fs, "PCM_16")
+    def progress_callback(samples, intervals, elapsed):
+        save_samples(samples, args.outdir + "/" + "decoded.interval.wav")
+
+    logging.info("decoding (length = %d)" % h.shape[2])
+    samples = model.fast_generate(x, h, new_samples, args.intervals, callback=progress_callback)
+    # samples = model.generate(x, h, new_samples, args.intervals)
+    logging.info(f"decoded {len(seed_sample)}")
+    save_samples(samples, args.outdir + "/" + "decoded.wav")
     logging.info("wrote decoded.wav in %s." % args.outdir)
 
 
