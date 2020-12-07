@@ -204,8 +204,9 @@ def main():
         wav_data = decode_mu_law(samples, config.n_quantize)
         sf.write(file_name, wav_data, args.fs, "PCM_16")
 
-    def progress_callback(samples, intervals, elapsed):
-        save_samples(samples, args.outdir + "/" + "decoded.interval.wav")
+    def progress_callback(samples, no_samples, elapsed):
+        save_samples(samples, args.outdir + "/" + "decoded.t.all.wav")
+        save_samples(samples[-no_samples:], args.outdir + "/" + "decoded.t.new.wav")
 
     logging.info("decoding (length = %d)" % h.shape[2])
     samples = model.fast_generate(x, h, new_samples, args.intervals, callback=progress_callback)

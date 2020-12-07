@@ -395,7 +395,7 @@ class WaveNet(nn.Module):
                     elapsed / intervals, (forward_time / elapsed)*100))
                 # call callback if provided
                 if callback is not None:
-                    callback(samples[-n_samples:].cpu().numpy(), intervals, elapsed)
+                    callback(samples.cpu().numpy(), i, elapsed)
                 start = time.time()
                 forward_time = 0
 
