@@ -20,3 +20,4 @@ egs/*/*/downloads
 audio
 runs
 checkpoint
+.ipynb_checkpoints/

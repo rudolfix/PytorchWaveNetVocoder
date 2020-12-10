@@ -166,13 +166,14 @@ def main():
         dilation_repeat=config.dilation_repeat,
         kernel_size=config.kernel_size)
 
-    model.load_state_dict(torch.load(
-        args.checkpoint,
-        map_location=lambda storage,
-        loc: storage)["model"])
+    checkpoint = torch.load(args.checkpoint, map_location=lambda storage, loc: storage)
+    model.load_state_dict(checkpoint["model"])
     model.eval()
     if torch.cuda.is_available():
         model.cuda()
+
+    # extract train iterations
+    train_iterations = checkpoint["iterations"]
 
     length_sec = args.batch_size*config.batch_length / args.fs
     logging.info(f"generating {args.batch_size} batches of {config.batch_length} samples = {length_sec} seconds")
@@ -186,13 +187,11 @@ def main():
     sample_id = np.random.randint(0, max_sample_id)
     seed_sample = seed_x[sample_id:sample_id + tot_sample_length]
 
-    sf.write(args.outdir + "/" + "seed_sample.wav", seed_sample, args.fs, "PCM_16")
+    sf.write(args.outdir + "/" + f"seed_sample-{train_iterations}-{args.seed}.wav", seed_sample, args.fs, "PCM_16")
     logging.info("wrote seed_sample.wav in %s." % args.outdir)
 
     # decode
-    # wav_data = []
     new_samples = args.batch_size*config.batch_length
-    # for _ in range(config.batch_size):
     x, h = decode_from_wav(
         seed_sample,
         new_samples,
@@ -205,14 +204,14 @@ def main():
         sf.write(file_name, wav_data, args.fs, "PCM_16")
 
     def progress_callback(samples, no_samples, elapsed):
-        save_samples(samples, args.outdir + "/" + "decoded.t.all.wav")
-        save_samples(samples[-no_samples:], args.outdir + "/" + "decoded.t.new.wav")
+        save_samples(samples, args.outdir + "/" + f"decoded.t.all-{train_iterations}-{args.seed}.wav")
+        save_samples(samples[-no_samples:], args.outdir + "/" + f"decoded.t.new-{train_iterations}-{args.seed}.wav")
 
     logging.info("decoding (length = %d)" % h.shape[2])
     samples = model.fast_generate(x, h, new_samples, args.intervals, callback=progress_callback)
     # samples = model.generate(x, h, new_samples, args.intervals)
     logging.info(f"decoded {len(seed_sample)}")
-    save_samples(samples, args.outdir + "/" + "decoded.wav")
+    save_samples(samples, args.outdir + "/" + f"decoded-{train_iterations}-{args.seed}.wav")
     logging.info("wrote decoded.wav in %s." % args.outdir)
 
 
