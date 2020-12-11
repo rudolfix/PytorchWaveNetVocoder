@@ -189,8 +189,8 @@ def main():
     sample_id = np.random.randint(0, max_sample_id)
     seed_sample = seed_x[sample_id:sample_id + tot_sample_length]
 
-    # pick speaker code
-    speaker_code = args.speaker_code or parse_wave_file_name(wav_file)[1]  # take code from filename if none
+    # take code from filename if none
+    speaker_code = parse_wave_file_name(wav_file)[1] if args.speaker_code is None else args.speaker_code
 
     # log decoding info
     output_fn_info = f"I{train_iterations}-R{args.seed}-S{speaker_code}-W{Path(wav_file).stem}"

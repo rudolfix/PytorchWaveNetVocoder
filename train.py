@@ -72,7 +72,7 @@ def load_speaker_code_set(file_list, same_speakers=True) -> List[List[Tuple[str,
     return list(utterances.values())
 
 
-@background(max_prefetch=16)
+@background(max_prefetch=1)
 def train_generator(wav_sets, sample_rate, receptive_field, batch_length, batch_size,
                     max_batches_per_file=None,
                     wav_transform=None,
