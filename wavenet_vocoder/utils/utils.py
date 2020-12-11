@@ -8,11 +8,25 @@ import logging
 import os
 import sys
 import threading
+import re
 
 import h5py
 import numpy as np
 
 from numpy.matlib import repmat
+from pathlib import Path
+
+
+def parse_wave_file_name(full_path):
+    """
+    Parses utterance code and speaker code out of file name
+    """
+    file_stem = Path(full_path).stem
+    file_match = re.match("U(\d+)_S(\d+)", file_stem)
+    if file_match is None:
+        raise ValueError(f"file stem {file_stem} must conform to format U(\\d+)_S(\\d+)*")
+    # (utterance_no, speaker_code)
+    return int(file_match.groups()[0]), int(file_match.groups()[1])
 
 
 def check_hdf5(hdf5_name, hdf5_path):
@@ -208,12 +222,12 @@ class BackgroundGenerator(threading.Thread):
 class background(object):
     """BACKGROUND GENERATOR DECORATOR."""
 
-    def __init__(self, max_prefetch=1):
+    def __init__(self, max_prefetch):
         self.max_prefetch = max_prefetch
 
     def __call__(self, gen):
         def bg_generator(*args, **kwargs):
-            return BackgroundGenerator(gen(*args, **kwargs))
+            return BackgroundGenerator(gen(*args, **kwargs), max_prefetch=self.max_prefetch)
         return bg_generator
 
 
