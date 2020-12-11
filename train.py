@@ -11,6 +11,8 @@ import sys
 import time
 
 from dateutil.relativedelta import relativedelta
+from typing import Dict, Tuple, List
+from functools import reduce
 
 import numpy as np
 import six
@@ -25,169 +27,159 @@ from wavenet_vocoder.nets import encode_mu_law, decode_mu_law
 from wavenet_vocoder.nets import initialize
 from wavenet_vocoder.nets import WaveNet
 from wavenet_vocoder.utils import background
-from wavenet_vocoder.utils import find_files
+from wavenet_vocoder.utils import find_files, parse_wave_file_name
 from wavenet_vocoder.utils import read_txt
 
 
-def validate_length(x, y, upsampling_factor=None):
-    """VALIDATE LENGTH.
+def create_speaker_code_feature(speaker_code, batch_length, receptive_field):
+    # we just need one short feature tensor as speaker_code is global
+    # empty feature file
+    h = np.empty((batch_length + receptive_field, 0), dtype=np.float32)
+    sc = np.tile(speaker_code, [h.shape[0], 1])
+    h = np.concatenate([h, sc], axis=1)
+    h_ = torch.from_numpy(h).float()
 
-    Args:
-        x (ndarray): ndarray with x.shape[0] = len_x.
-        y (ndarray): ndarray with y.shape[0] = len_y.
-        upsampling_factor (int): Upsampling factor.
+    return h_[:-1].transpose(0, 1)
 
-    Returns:
-        ndarray: Length adjusted x with same length y.
-        ndarray: Length adjusted y with same length x.
 
-    """
-    if upsampling_factor is None:
-        if x.shape[0] < y.shape[0]:
-            y = y[:x.shape[0]]
-        if x.shape[0] > y.shape[0]:
-            x = x[:y.shape[0]]
-        assert len(x) == len(y)
-    else:
-        if x.shape[0] > y.shape[0] * upsampling_factor:
-            x = x[:y.shape[0] * upsampling_factor]
-        if x.shape[0] < y.shape[0] * upsampling_factor:
-            mod_y = y.shape[0] * upsampling_factor - x.shape[0]
-            mod_y_frame = mod_y // upsampling_factor + 1
-            y = y[:-mod_y_frame]
-            x = x[:y.shape[0] * upsampling_factor]
-        assert len(x) == len(y) * upsampling_factor
+def load_flat_wav_set(file_list, speaker_code=0):
+    # create list of following tuples [[(wav_files, speaker_code)]]
+    return [[(f, speaker_code)] for f in file_list]
 
-    return x, y
+
+def load_speaker_code_set(file_list, same_speakers=True) -> List[List[Tuple[str, int]]]:
+    # loads and groups files of following format Unn_Snnn_*.wav where
+    # Snn gives speaker code nn, Unnn gives utterance number nnn
+    # grouping by utterance number - all utterance must have same speaker sets
+    utterances: Dict[int, List[Tuple[str, int]]] = {}
+    for file in file_list:
+        utterance_no, speaker_code = parse_wave_file_name(file)
+
+        if utterance_no in utterances:
+            utterances[utterance_no].append((file, speaker_code))
+        else:
+            utterances[utterance_no] = [(file, speaker_code)]
+    # validate if utterances have same speakers
+    if same_speakers:
+        # yes we could just group and make intersection on all sets
+        speaker_sets = [set([t[1] for t in u]) for u in utterances.values()]
+        intersection = reduce(lambda x, y: x.intersection(y), speaker_sets, speaker_sets[0])
+        if intersection != speaker_sets[0]:
+            difference = speaker_sets[0].symmetric_difference(intersection)
+            logging.error(f"not all speaker sets are equal {difference}")
+            raise ValueError(difference)
+
+    return list(utterances.values())
 
 
 @background(max_prefetch=16)
-def train_generator(wav_list, sample_rate, receptive_field,
-                    batch_length=None,
-                    batch_size=1,
+def train_generator(wav_sets, sample_rate, receptive_field, batch_length, batch_size,
+                    max_batches_per_file=None,
                     wav_transform=None,
-                    feat_transform=None,
-                    shuffle=True,
-                    speaker_code=0):
+                    shuffle=True):
     """GENERATE TRAINING BATCH.
 
     Args:
-        wav_list (list): List of wav files.
+        wav_sets (list(list(tuple)): List of sets of wav files grouped into utterances with same speaker sets.
         receptive_field (int): Size of receptive filed.
         batch_length (int): Batch length (if set None, utterance batch will be used.).
         batch_size (int): Batch size (if batch_length = None, batch_size will be 1.).
+        max_batches_per_file (int):  maximum batches sampled from a single file
         wav_transform (func): Preprocessing function for waveform.
         shuffle (bool): Whether to shuffle the file list and samples
-        speaker_code (bool): Pass speaker code
 
     Returns:
         generator: Generator instance.
 
     """
     # shuffle list
-    if shuffle:
-        n_files = len(wav_list)
+    def shuffle_set():
+        n_files = len(wav_sets)
         idx = np.random.permutation(n_files)
-        wav_list = [wav_list[i] for i in idx]
+        return [wav_sets[i] for i in idx]
 
-    # show warning
-    if batch_length is None and batch_size > 1:
-        logging.warning("in utterance batch mode, batchsize will be 1.")
+    if shuffle:
+        wav_sets = shuffle_set()
+
+    if batch_length is None:
+        raise NotImplemented("utterance mode not supported")
+
+    speaker_codes = {}
+
+    def get_speaker_features(speaker_code):
+        return speaker_codes.setdefault(speaker_code,
+                                        create_speaker_code_feature(speaker_code, batch_length, receptive_field))
 
     while True:
-        batch_x, batch_h, batch_t = [], [], []
         # process over all of files
-        for wavfile in wav_list:
-            # load waveform and aux feature
-            x, _rate = sf.read(wavfile, dtype=np.float32)
-            assert sample_rate == _rate, f"expected sample rate is {sample_rate}, {wavfile} is {_rate}"
-            # empty feature file
-            h = np.empty((x.shape[0], 0), dtype=np.float32)
-            # h = extend_time(h, upsampling_factor)
-            # speaker code is mandatory
-            sc = np.tile(speaker_code, [h.shape[0], 1])
-            h = np.concatenate([h, sc], axis=1)
+        for wav_set in wav_sets:
+            logging.debug(f"processing utterance set with {len(wav_set)} speakers")
+            loaded_waves = []
+            for wavfile, speaker_code in wav_set:
+                x, _rate = sf.read(wavfile, dtype=np.float32)
+                assert sample_rate == _rate, f"expected sample rate is {sample_rate}, {wavfile} is {_rate}"
+                h_ = get_speaker_features(speaker_code)
+                epoch_len = (len(x) - receptive_field - batch_length) // batch_length
+                logging.debug(f"loading {wavfile} with speaker code {speaker_code} and {epoch_len} batches")
+                loaded_waves.append((x, h_, epoch_len))
 
-            # check both lengths are same
-            logging.debug("before x length = %d" % x.shape[0])
-            logging.debug("before h length = %d" % h.shape[0])
-            x, h = validate_length(x, h)
-            logging.debug("after x length = %d" % x.shape[0])
-            logging.debug("after h length = %d" % h.shape[0])
+            # use minimum epoch_len. we assume that same utterances from different speakers are more or less same size
+            min_epoch_len = min(t[2] for t in loaded_waves)
 
-            # ---------------------------------------
-            # use mini batch without upsampling layer
-            # ---------------------------------------
-            if batch_length is not None:
-                # make buffer array
-                epoch_range = np.arange((len(x) - receptive_field - batch_length) // batch_length)
-                if shuffle:
-                    np.random.shuffle(epoch_range)
+            # make array of batches
+            file_epoch_range = np.arange(min_epoch_len)
+            if shuffle:
+                np.random.shuffle(file_epoch_range)
+            # limit epoch range of a single file
+            if max_batches_per_file:
+                logging.debug(f"limiting batches from {len(file_epoch_range)} to {max_batches_per_file}")
+                file_epoch_range = file_epoch_range[:max_batches_per_file]
 
-                for idx in epoch_range:
-                    # get pieces
-                    start_sample = idx * batch_length
-                    x_ = x[start_sample:start_sample + receptive_field + batch_length]
-                    h_ = h[start_sample:start_sample + receptive_field + batch_length]
+            def sample_speaker():
+                return loaded_waves[np.random.randint(len(loaded_waves))]
 
-                    # perform pre-processing
-                    if wav_transform is not None:
-                        x_ = wav_transform(x_)
+            # new set - new batch, that discards incomplete batch leftover
+            batch_x, batch_h, batch_t = [], [], []
+            x, h_, _ = sample_speaker()
 
-                    # convert to torch variable
-                    x_ = torch.from_numpy(x_).long()
-                    h_ = torch.from_numpy(h_).float()
+            for idx in file_epoch_range:
+                # get pieces
+                start_sample = idx * batch_length
+                x_ = x[start_sample:start_sample + receptive_field + batch_length]
 
-                    # remove the last and first sample for training
-                    batch_x += [x_[:-1]]  # (T)
-                    batch_h += [h_[:-1].transpose(0, 1)]  # (D x T)
-                    batch_t += [x_[1:]]  # (T)
-
-                    # return mini batch
-                    if len(batch_x) == batch_size:
-                        batch_x = torch.stack(batch_x)
-                        batch_h = torch.stack(batch_h)
-                        batch_t = torch.stack(batch_t)
-
-                        # send to cuda
-                        if torch.cuda.is_available():
-                            batch_x = batch_x.cuda()
-                            batch_h = batch_h.cuda()
-                            batch_t = batch_t.cuda()
-
-                        yield (batch_x, batch_h), batch_t
-
-                        batch_x, batch_h, batch_t = [], [], []
-
-            # --------------------------------------------
-            # use utterance batch without upsampling layer
-            # --------------------------------------------
-            elif batch_length is None:
                 # perform pre-processing
                 if wav_transform is not None:
-                    x = wav_transform(x)
+                    x_ = wav_transform(x_)
 
                 # convert to torch variable
-                x = torch.from_numpy(x).long()
-                h = torch.from_numpy(h).float()
+                x_ = torch.from_numpy(x_).long()
 
                 # remove the last and first sample for training
-                batch_x = x[:-1].unsqueeze(0)  # (1 x T)
-                batch_h = h[:-1].transpose(0, 1).unsqueeze(0)  # (1 x D x T)
-                batch_t = x[1:].unsqueeze(0)  # (1 x T)
+                batch_x += [x_[:-1]]  # (T)
+                batch_h += [h_]  # (D x T)
+                batch_t += [x_[1:]]  # (T)
 
-                # send to cuda
-                if torch.cuda.is_available():
-                    batch_x = batch_x.cuda()
-                    batch_h = batch_h.cuda()
-                    batch_t = batch_t.cuda()
+                # return mini batch
+                if len(batch_x) == batch_size:
+                    batch_x = torch.stack(batch_x)
+                    batch_h = torch.stack(batch_h)
+                    batch_t = torch.stack(batch_t)
 
-                yield (batch_x, batch_h), batch_t
+                    # send to cuda
+                    if torch.cuda.is_available():
+                        batch_x = batch_x.cuda()
+                        batch_h = batch_h.cuda()
+                        batch_t = batch_t.cuda()
+
+                    yield (batch_x, batch_h), batch_t
+
+                    # new batch - new speaker
+                    batch_x, batch_h, batch_t = [], [], []
+                    x, h_, _ = sample_speaker()
 
         # re-shuffle
         if shuffle:
-            idx = np.random.permutation(n_files)
-            wav_list = [wav_list[i] for i in idx]
+            wav_sets = shuffle_set()
 
 
 def save_checkpoint(checkpoint_dir, model, optimizer, iterations):
@@ -233,7 +225,7 @@ def main():
                         type=int, help="number of repeating of dilation")
     parser.add_argument("--kernel_size", default=2,
                         type=int, help="kernel size of dilated causal convolution")
-    parser.add_argument("--speaker_code", default=0,
+    parser.add_argument("--speaker_code",
                         type=int, help="speaker code")
     # network training setting
     parser.add_argument("--lr", default=1e-4,
@@ -244,6 +236,8 @@ def main():
                         type=int, help="batch length (if set 0, utterance batch will be used)")
     parser.add_argument("--batch_size", default=1,
                         type=int, help="batch size (if use utterance batch, batch_size will be 1.")
+    parser.add_argument("--max_batches_per_file",
+                        type=int, help="Maximum batches generated from a single wav file.")
     parser.add_argument("--iters", default=200000,
                         type=int, help="number of iterations")
     # other setting
@@ -337,16 +331,21 @@ def main():
         logging.error("--waveforms should be directory or list.")
         sys.exit(1)
 
-    logging.info("number of training data = %d." % len(wav_list))
+    if args.speaker_code is None:
+        wav_set = load_speaker_code_set(wav_list, same_speakers=True)
+    else:
+        wav_set = load_flat_wav_set(wav_list, args.speaker_code)
+
+    logging.info("number of training sets = %d with %d files." % (len(wav_set), len(wav_list)))
     generator = train_generator(
-        wav_list,
+        wav_set,
         args.fs,
-        receptive_field=model.receptive_field,
-        batch_length=args.batch_length,
-        batch_size=args.batch_size,
+        model.receptive_field,
+        args.batch_length,
+        args.batch_size,
+        max_batches_per_file=args.max_batches_per_file,
         wav_transform=wav_transform,
-        shuffle=True,
-        speaker_code=args.speaker_code)
+        shuffle=True)
 
     # charge minibatch in queue
     while not generator.queue.full():

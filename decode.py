@@ -6,26 +6,21 @@
 
 import argparse
 import logging
-import math
 import os
 import sys
 
 import numpy as np
 import soundfile as sf
 import torch
-import torch.multiprocessing as mp
 
-from sklearn.preprocessing import StandardScaler
 from torchvision import transforms
+from pathlib import Path
 
 from wavenet_vocoder.nets import decode_mu_law
 from wavenet_vocoder.nets import encode_mu_law
 from wavenet_vocoder.nets import WaveNet
-from wavenet_vocoder.utils import extend_time
-from wavenet_vocoder.utils import find_files
-from wavenet_vocoder.utils import read_hdf5
+from wavenet_vocoder.utils import find_files, parse_wave_file_name
 from wavenet_vocoder.utils import read_txt
-from wavenet_vocoder.utils import shape_hdf5
 
 
 def decode_from_wav(x,
@@ -89,7 +84,7 @@ def main():
                         type=int, help="sampling rate")
     parser.add_argument("--batch_size", default=1,
                         type=int, help="number of batches to decode of batch_length")
-    parser.add_argument("--speaker_code", default=0,
+    parser.add_argument("--speaker_code",
                         type=int, help="speaker code")
     # other setting
     parser.add_argument("--intervals", default=1000,
@@ -135,8 +130,16 @@ def main():
     elif os.path.isfile(args.seed_waveforms):
         wav_list = read_txt(args.seed_waveforms)
     else:
-        logging.error("--waveforms should be directory or list.")
+        logging.error("--seed_waveforms should be directory or list.")
         sys.exit(1)
+
+    # if speaker code is specified then filter out all other speakers if files conform to wave set pattern
+    if not args.speaker_code is None:
+        try:
+            wav_list =  [file for file in wav_list if parse_wave_file_name(file)[1] == args.speaker_code]
+        except ValueError:
+            # files not in wave set format, then original list will be kept
+            pass
 
     # fix seed
     os.environ['PYTHONHASHSEED'] = str(args.seed)
@@ -175,19 +178,28 @@ def main():
     # extract train iterations
     train_iterations = checkpoint["iterations"]
 
-    length_sec = args.batch_size*config.batch_length / args.fs
-    logging.info(f"generating {args.batch_size} batches of {config.batch_length} samples = {length_sec} seconds")
-
     # choose seed sample
     wav_id = np.random.randint(0, high=len(wav_list))
-    seed_x, _ = sf.read(wav_list[wav_id], dtype=np.float32)
+    wav_file = wav_list[wav_id]
+    seed_x, _rate = sf.read(wav_file, dtype=np.float32)
+    assert args.fs == _rate, f"expected sample rate is {args.fs}, {wav_file} is {_rate}"
     tot_sample_length = config.batch_length + model.receptive_field
     max_sample_id = seed_x.shape[0] - tot_sample_length
     assert max_sample_id >= 0
     sample_id = np.random.randint(0, max_sample_id)
     seed_sample = seed_x[sample_id:sample_id + tot_sample_length]
 
-    sf.write(args.outdir + "/" + f"seed_sample-{train_iterations}-{args.seed}.wav", seed_sample, args.fs, "PCM_16")
+    # pick speaker code
+    speaker_code = args.speaker_code or parse_wave_file_name(wav_file)[1]  # take code from filename if none
+
+    # log decoding info
+    output_fn_info = f"I{train_iterations}-R{args.seed}-S{speaker_code}-W{Path(wav_file).stem}"
+    length_sec = args.batch_size * config.batch_length / args.fs
+    logging.info(f"generating {args.batch_size} batches of {config.batch_length} samples = {length_sec} seconds"
+                 f" into {output_fn_info} set")
+
+    # write seed sample
+    sf.write(args.outdir + f"/seed_sample-{output_fn_info}.wav", seed_sample, args.fs, "PCM_16")
     logging.info("wrote seed_sample.wav in %s." % args.outdir)
 
     # decode
@@ -196,7 +208,7 @@ def main():
         seed_sample,
         new_samples,
         wav_transform=wav_transform,
-        speaker_code=args.speaker_code
+        speaker_code=speaker_code
     )
 
     def save_samples(samples, file_name):
@@ -204,16 +216,15 @@ def main():
         sf.write(file_name, wav_data, args.fs, "PCM_16")
 
     def progress_callback(samples, no_samples, elapsed):
-        save_samples(samples, args.outdir + "/" + f"decoded.t.all-{train_iterations}-{args.seed}.wav")
-        save_samples(samples[-no_samples:], args.outdir + "/" + f"decoded.t.new-{train_iterations}-{args.seed}.wav")
+        save_samples(samples, args.outdir + "/" + f"decoded.t.all-{output_fn_info}.wav")
+        save_samples(samples[-no_samples:], args.outdir + "/" + f"decoded.t.new-{output_fn_info}.wav")
 
     logging.info("decoding (length = %d)" % h.shape[2])
     samples = model.fast_generate(x, h, new_samples, args.intervals, callback=progress_callback)
     # samples = model.generate(x, h, new_samples, args.intervals)
     logging.info(f"decoded {len(seed_sample)}")
-    save_samples(samples, args.outdir + "/" + f"decoded-{train_iterations}-{args.seed}.wav")
+    save_samples(samples, args.outdir + "/" + f"decoded-{output_fn_info}.wav")
     logging.info("wrote decoded.wav in %s." % args.outdir)
-
 
 
 if __name__ == "__main__":
